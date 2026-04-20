@@ -36,9 +36,11 @@ global SwapPendingTick := 0
 global SwapWaitMs := ScaleMs(1800)
 global SwapConfirmMs := ScaleMs(450)
 global CurrentWeapon := ""
+global LogFilePath := ""
 global F5Armed := false
 global F5ArmedTick := 0
 global OpenerActive := false
+global OpenerInProgress := false
 global OpenerStep := 1
 global OpenerPlan := [
     ["3"],
@@ -160,7 +162,7 @@ F10:: {
 }
 
 ToggleRotation() {
-    global Running, BusyUntil, GsStep, DsStep, AwaitingSwap, ExpectedWeapon, CurrentWeapon, LastWeapon, OpenerActive, OpenerStep, F5Armed, F5ArmedTick
+    global Running, BusyUntil, GsStep, DsStep, AwaitingSwap, ExpectedWeapon, CurrentWeapon, LastWeapon, OpenerActive, OpenerStep, F5Armed, F5ArmedTick, LogFilePath
 
     Running := !Running
     BusyUntil := 0
@@ -176,6 +178,14 @@ ToggleRotation() {
         OpenerStep := 1
         F5Armed := false
         F5ArmedTick := 0
+
+        ; create new log file per start
+        now := A_Now
+        date := SubStr(now,1,8)
+        time := SubStr(now,9,6)
+        LogFilePath := "D:\\Code\\GW2Scripts\\chrono_log_" . date . "_" . time . ".txt"
+        FileAppend("[START] " . SubStr(now,1,4) . "-" . SubStr(now,5,2) . "-" . SubStr(now,7,2) . " " . SubStr(now,9,2) . ":" . SubStr(now,11,2) . ":" . SubStr(now,13,2) . "`n", LogFilePath)
+        LogEvent("START", CurrentWeapon, "Opener=" . (OpenerActive ? "1" : "0"))
         ShowTip("Chrono loop ON")
     } else {
         ShowTip("Chrono loop OFF")
@@ -220,8 +230,17 @@ RotationTick() {
         return
     }
 
-    if (CurrentWeapon = "")
-        CurrentWeapon := DetectWeapon()
+    ; quick sync: if UI shows a different weapon than internal state, adopt it immediately
+    detected := DetectWeapon()
+    if (CurrentWeapon = "") {
+        CurrentWeapon := detected
+        LastWeapon := CurrentWeapon
+    } else if (detected != CurrentWeapon) {
+        CurrentWeapon := detected
+        LastWeapon := CurrentWeapon
+        SetLoopStep(CurrentWeapon, 1)
+        BusyUntil := A_TickCount + ScaleMs(80)
+    }
 
     weapon := CurrentWeapon
 
@@ -237,7 +256,8 @@ RotationTick() {
             AwaitingSwap := false
             SwapPendingTick := 0
             ExpectedWeapon := ""
-            SetLoopStep(weapon, GetResumeStep(weapon))
+            SetLoopStep(weapon, 1)
+            BusyUntil := A_TickCount + ScaleMs(300)
             if (OpenerActive && OpenerStep > OpenerPlan.Length) {
                 OpenerActive := false
                 OpenerStep := 1
@@ -250,7 +270,8 @@ RotationTick() {
             LastWeapon := weapon
             LastWeaponSwapTick := A_TickCount
             ExpectedWeapon := ""
-            SetLoopStep(weapon, GetResumeStep(weapon))
+            SetLoopStep(weapon, 1)
+            BusyUntil := A_TickCount + ScaleMs(300)
             if (OpenerActive && OpenerStep > OpenerPlan.Length) {
                 OpenerActive := false
                 OpenerStep := 1
@@ -265,8 +286,12 @@ RotationTick() {
         return
 
     if OpenerActive {
-        if TryOpenerSequence(weapon)
-            return
+        global OpenerInProgress
+        if !OpenerInProgress {
+            OpenerInProgress := true
+            RunOpener(CurrentWeapon)
+            OpenerInProgress := false
+        }
         return
     }
 
@@ -312,6 +337,7 @@ ExecuteStepGroup(group, weapon) {
     for _, action in group {
         if (action = "F5") {
             SendEvent(ActionSend[action])
+            LogEvent(action, CurrentWeapon)
             LastAction := action
             LastActionTick := A_TickCount
             continue
@@ -321,6 +347,7 @@ ExecuteStepGroup(group, weapon) {
             return false
 
         SendEvent(ActionSend[action])
+        LogEvent(action, CurrentWeapon)
         LastAction := action
         LastActionTick := A_TickCount
 
@@ -431,7 +458,7 @@ TryFiller(weapon) {
 }
 
 CastAction(action, weapon) {
-    global ActionSend, BusyUntil, LastAction, LastActionTick, LastF5Tick, AwaitingSwap, ExpectedWeapon, SwapPendingTick, CurrentWeapon, LastWeapon, F5Armed, F5ArmedTick, OpenerActive
+    global ActionSend, BusyUntil, LastAction, LastActionTick, LastF5Tick, AwaitingSwap, ExpectedWeapon, SwapPendingTick, CurrentWeapon, LastWeapon, LastWeaponSwapTick, F5Armed, F5ArmedTick, OpenerActive
 
     if !ActionSend.Has(action)
         return false
@@ -454,18 +481,25 @@ CastAction(action, weapon) {
         F5ArmedTick := A_TickCount
     }
     if (action = "SWAP") {
-        AwaitingSwap := true
-        ExpectedWeapon := (weapon = "GS") ? "DS" : "GS"
-        SwapPendingTick := A_TickCount
+        ; Immediate swap: update internal weapon tracking without waiting for pixel confirmation
+        ExpectedWeapon := ""
+        CurrentWeapon := (weapon = "GS") ? "DS" : "GS"
+        LastWeapon := CurrentWeapon
+        LastWeaponSwapTick := A_TickCount
+        AwaitingSwap := false
+        SwapPendingTick := 0
+        SetLoopStep(CurrentWeapon, 1)
+        BusyUntil := A_TickCount + ScaleMs(150)
     }
     return true
 }
 
 SendDuringCast(action, castMs) {
-    global ActionSend, CastRepeatMs, Running, TargetWindow
+    global ActionSend, CastRepeatMs, Running, TargetWindow, CurrentWeapon, BusyUntil
 
     key := ActionSend[action]
     SendEvent(key)
+    LogEvent(action, CurrentWeapon)
 
     if (castMs <= 0)
         return
@@ -659,4 +693,77 @@ ReadyFlag(skill) {
 ScaleMs(value) {
     global TimingScale
     return Max(1, Round(value * TimingScale))
+}
+
+LogEvent(action, weapon, extra := "") {
+    global ActionSend, BusyUntil, LogFilePath
+
+    outFile := (LogFilePath != "") ? LogFilePath : "D:\\Code\\GW2Scripts\\chrono_log.txt"
+    now := A_Now
+    ts := SubStr(now,1,4) . "-" . SubStr(now,5,2) . "-" . SubStr(now,7,2) . " " . SubStr(now,9,2) . ":" . SubStr(now,11,2) . ":" . SubStr(now,13,2)
+    ms := Mod(A_TickCount, 1000)
+    if (ms < 10)
+        msStr := "00" . ms
+    else if (ms < 100)
+        msStr := "0" . ms
+    else
+        msStr := ms
+    ts := ts . "." . msStr
+
+    key := (ActionSend.Has(action)) ? ActionSend[action] : ""
+    line := "[" . ts . "] SEND: " . action . " key=" . key . " weapon=" . weapon . " BusyUntil=" . BusyUntil . " " . extra . "`n"
+    FileAppend(line, outFile)
+}
+
+RunOpener(startWeapon) {
+    global OpenerPlan, OpenerStep, BusyUntil, ActionSend, SwapWaitMs, CurrentWeapon, LastWeapon, LastWeaponSwapTick, AwaitingSwap, ExpectedWeapon, SwapPendingTick, Running, TargetWindow, OpenerActive
+
+    weapon := startWeapon
+    if (OpenerStep < 1)
+        OpenerStep := 1
+
+    i := OpenerStep
+    while (i <= OpenerPlan.Length) {
+        if !Running
+            break
+        if !WinActive(TargetWindow)
+            break
+
+        group := OpenerPlan[i]
+
+        if (group.Length = 1 && group[1] = "SWAP") {
+            ; perform swap using direct send
+            SendEvent(ActionSend["SWAP"])
+            LogEvent("SWAP", weapon)
+
+            ; Immediately consider the swap done (no pixel confirmation) and switch internal state
+            newWeapon := (weapon = "GS") ? "DS" : "GS"
+            CurrentWeapon := newWeapon
+            LastWeapon := newWeapon
+            LastWeaponSwapTick := A_TickCount
+            AwaitingSwap := false
+            ExpectedWeapon := ""
+            SwapPendingTick := 0
+
+            ; reset loop position for the new weapon and give a short buffer
+            SetLoopStep(CurrentWeapon, 1)
+            BusyUntil := A_TickCount + ScaleMs(120)
+
+            OpenerStep := i + 1
+            i += 1
+            continue
+        }
+
+        ; non-swap group: use existing executor
+        if !ExecuteStepGroup(group, weapon)
+            break
+
+        OpenerStep := i + 1
+        i += 1
+    }
+
+    ; on completion (or abort), ensure DS loop starts at 1
+    SetLoopStep("DS", 1)
+    OpenerActive := false
+    OpenerStep := 1
 }
