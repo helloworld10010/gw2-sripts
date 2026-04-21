@@ -7,7 +7,7 @@ CoordMode("Pixel", "Screen")
 
 global PickerOn := true
 
-SetTimer(UpdateOverlay, 50)
+SetTimer(UpdateOverlay, 200)
 
 F8:: {
     global PickerOn
