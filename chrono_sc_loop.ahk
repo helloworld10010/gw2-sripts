@@ -59,17 +59,17 @@ global OpenerPlan := [
     ["SWAP"]
 ]
 
-global CastBuffer := 90
-global UtilityBuffer := 120
-global SwapRetryMs := ScaleMs(700)
-global SwapSend := "{vkC0}"
-global CastRepeatMs := ScaleMs(60)
+global CastBuffer := 90 ; 主技能（1-5）施放后保留的缓冲时间（毫秒），用于 BusyUntil，防止过早发送下一动作
+global UtilityBuffer := 90 ; 功能/非直接施法按键（F键、SWAP 等）的缓冲时间（毫秒）
+global SwapRetryMs := ScaleMs(700) ; 换武尝试的最小间隔，避免短时间内重复触发换武
+global SwapSend := "{vkC0}" ; 发送换武的按键（虚拟键或映射），可根据按键映射修改
+global CastRepeatMs := ScaleMs(60) ; 在施法持续时间内重复发送按键的间隔（毫秒），用于 SendDuringCast
 
-global WeaponIndicator := [818, 1037]
-global IllusionIndicator := [827, 946]
-global FullIllusionColor := 0x212429
-global PowerSpikeIndicator := [1194, 1023]
-global PowerSpikeFullColor := 0xFFFFFF
+global WeaponIndicator := [818, 1037] ; 屏幕像素坐标：武器指示器（DetectWeapon 读取此像素判断当前武器）
+global IllusionIndicator := [827, 946] ; 屏幕像素坐标：幻影充能指示器（HasFullIllusions 使用）
+global FullIllusionColor := 0x212429 ; 幻影满充时的像素颜色（与 PixelGetColor 返回值比较以判定是否满）
+global PowerSpikeIndicator := [1194, 1023] ; 屏幕像素坐标：能量突发（power spike）指示器（用于 CanCastPowerSpike）
+global PowerSpikeFullColor := 0xFFFFFF ; 能量突发满时的像素颜色（用于比较）
 
 global SkillPixels := Map(
     "1", [691, 1024],
@@ -139,7 +139,7 @@ global DsStep := 0 ; 当前在 DSPlan 中的索引（逻辑同上）
 ; Filler windows use q/e/z, then r on full charges, then auto attack.
 global FillerPriority := ["7", "8", "0"] ; 当主序列不可用时尝试的填充技能优先级（例如 q/e/z）
 
-if (A_Args.Length && A_Args[1] = "--syntax-check")
+if (A_Args.Length && A_Args[1] == "--syntax-check")
     ExitApp()
 
 SetTimer(RotationTick, 30)
@@ -174,7 +174,7 @@ ToggleRotation() {
         ExpectedWeapon := ""
         CurrentWeapon := DetectWeapon()
         LastWeapon := CurrentWeapon
-        OpenerActive := (CurrentWeapon = "DS")
+        OpenerActive := (CurrentWeapon == "DS")
         OpenerStep := 1
         F5Armed := false
         F5ArmedTick := 0
@@ -232,7 +232,7 @@ RotationTick() {
 
     ; quick sync: if UI shows a different weapon than internal state, adopt it immediately
     detected := DetectWeapon()
-    if (CurrentWeapon = "") {
+    if (CurrentWeapon == "") {
         CurrentWeapon := detected
         LastWeapon := CurrentWeapon
     } else if (detected != CurrentWeapon) {
@@ -311,7 +311,7 @@ TryOpenerSequence(weapon) {
 
     group := OpenerPlan[OpenerStep]
 
-    if (group.Length = 1 && group[1] = "SWAP") {
+    if (group.Length == 1 && group[1] == "SWAP") {
         if (A_TickCount - LastSwapAttempt >= SwapRetryMs && IsReady("SWAP")) {
             LastSwapAttempt := A_TickCount
             if CastAction("SWAP", weapon) {
@@ -335,7 +335,7 @@ ExecuteStepGroup(group, weapon) {
     castSkill := ""
 
     for _, action in group {
-        if (action = "F5") {
+        if (action == "F5") {
             SendEvent(ActionSend[action])
             LogEvent(action, CurrentWeapon)
             LastAction := action
@@ -343,7 +343,7 @@ ExecuteStepGroup(group, weapon) {
             continue
         }
 
-        if !ActionSend.Has(action)
+        if !ActionSend.HasKey(action)
             return false
 
         SendEvent(ActionSend[action])
@@ -351,11 +351,11 @@ ExecuteStepGroup(group, weapon) {
         LastAction := action
         LastActionTick := A_TickCount
 
-        if (castSkill = "" && GetActionDelay(action, weapon) > 0)
+        if (castSkill == "" && GetActionDelay(action, weapon) > 0)
             castSkill := action
     }
 
-    if (castSkill = "")
+    if (castSkill == "")
         return true
 
     castMs := GetActionDelay(castSkill, weapon)
@@ -386,7 +386,7 @@ ExecuteStepGroup(group, weapon) {
 TrySequence(weapon) {
     global GSPlan, DSPlan, LastSwapAttempt, SwapRetryMs
 
-    plan := (weapon = "GS") ? GSPlan : DSPlan
+    plan := (weapon == "GS") ? GSPlan : DSPlan
     step := GetLoopStep(weapon)
     if (step < 1 || step > plan.Length) {
         step := 1
@@ -395,7 +395,7 @@ TrySequence(weapon) {
 
     action := plan[step]
 
-    if (action = "FILL") {
+    if (action == "FILL") {
         nextAction := plan[step + 1]
         if IsReady(nextAction) {
             SetLoopStep(weapon, step + 1)
@@ -404,7 +404,7 @@ TrySequence(weapon) {
         return TryFiller(weapon)
     }
 
-    if (action = "SWAP") {
+    if (action == "SWAP") {
         if (A_TickCount - LastSwapAttempt >= SwapRetryMs && IsReady("SWAP")) {
             LastSwapAttempt := A_TickCount
             if CastAction("SWAP", weapon)
@@ -460,7 +460,7 @@ TryFiller(weapon) {
 CastAction(action, weapon) {
     global ActionSend, BusyUntil, LastAction, LastActionTick, LastF5Tick, AwaitingSwap, ExpectedWeapon, SwapPendingTick, CurrentWeapon, LastWeapon, LastWeaponSwapTick, F5Armed, F5ArmedTick, OpenerActive
 
-    if !ActionSend.Has(action)
+    if !ActionSend.HasKey(action)
         return false
 
     castMs := GetActionDelay(action, weapon)
@@ -470,13 +470,13 @@ CastAction(action, weapon) {
     BusyUntil := A_TickCount + bufferMs
     LastAction := action
     LastActionTick := A_TickCount
-    if (action = "F5")
+    if (action == "F5")
         LastF5Tick := A_TickCount
-    if (action = "F5") {
+    if (action == "F5") {
         F5Armed := false
         F5ArmedTick := 0
     }
-    if (OpenerActive && weapon = "GS" && (action = "4" || action = "0")) {
+    if (OpenerActive && weapon == "GS" && (action == "4" || action == "0")) {
         F5Armed := true
         F5ArmedTick := A_TickCount
     }
@@ -516,13 +516,13 @@ SendDuringCast(action, castMs) {
 GetActionDelay(action, weapon) {
     global GSDelays, DSDelays, TimingScale
 
-    if (action = "SWAP")
+    if (action == "SWAP")
         return ScaleMs(550)
 
-    if (weapon = "GS" && GSDelays.Has(action))
+    if (weapon == "GS" && GSDelays.HasKey(action))
         return ScaleMs(GSDelays[action])
 
-    if (weapon = "DS" && DSDelays.Has(action))
+    if (weapon == "DS" && DSDelays.HasKey(action))
         return ScaleMs(DSDelays[action])
 
     return 0
@@ -531,7 +531,7 @@ GetActionDelay(action, weapon) {
 GetActionBuffer(action) {
     global CastBuffer, UtilityBuffer
 
-    if (action = "SWAP")
+    if (action == "SWAP")
         return ScaleMs(550)
 
     if RegExMatch(action, "^[1-5]$")
@@ -549,13 +549,13 @@ DetectWeapon() {
 
 GetLoopStep(weapon) {
     global GsStep, DsStep
-    return (weapon = "GS") ? GsStep : DsStep
+    return (weapon == "GS") ? GsStep : DsStep
 }
 
 SetLoopStep(weapon, step) {
     global GsStep, DsStep
 
-    if (weapon = "GS") {
+    if (weapon == "GS") {
         GsStep := step
     } else {
         DsStep := step
@@ -598,13 +598,13 @@ CanCastPowerSpike() {
     global PowerSpikeIndicator, PowerSpikeFullColor
 
     color := PixelGetColor(PowerSpikeIndicator[1], PowerSpikeIndicator[2], "RGB")
-    return (color = PowerSpikeFullColor)
+    return (color == PowerSpikeFullColor)
 }
 
 IsReady(skill) {
     global SkillPixels
 
-    if !SkillPixels.Has(skill)
+    if !SkillPixels.HasKey(skill)
         return false
 
     pos := SkillPixels[skill]
@@ -613,7 +613,7 @@ IsReady(skill) {
 }
 
 IsBlack(color) {
-    return (color = 0x000000)
+    return (color == 0x000000)
 }
 
 ShowTip(text) {
@@ -681,7 +681,7 @@ LogEvent(action, weapon, extra := "") {
         msStr := ms
     ts := ts . "." . msStr
 
-    key := (ActionSend.Has(action)) ? ActionSend[action] : ""
+    key := (ActionSend.HasKey(action)) ? ActionSend[action] : ""
     line := "[" . ts . "] SEND: " . action . " key=" . key . " weapon=" . weapon . " BusyUntil=" . BusyUntil . " " . extra . "`n"
     FileAppend(line, outFile)
 }
@@ -702,7 +702,7 @@ RunOpener(startWeapon) {
 
         group := OpenerPlan[i]
 
-        if (group.Length = 1 && group[1] = "SWAP") {
+        if (group.Length == 1 && group[1] == "SWAP") {
             ; perform swap: send swap via CastAction and wait for pixel confirmation before proceeding
             if (A_TickCount - LastSwapAttempt >= SwapRetryMs && IsReady("SWAP")) {
                 LastSwapAttempt := A_TickCount
