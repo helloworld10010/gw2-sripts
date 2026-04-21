@@ -20,32 +20,32 @@ CoordMode("Pixel", "Screen")
 SendMode("Event")
 SetKeyDelay(30, 30)
 
-global TargetWindow := "ahk_exe Gw2-64.exe"
-global Running := false
-global BusyUntil := 0
-global TimingScale := 1.1
-global LastWeapon := ""
-global LastSwapAttempt := 0
-global LastWeaponSwapTick := 0
-global LastAction := ""
-global LastActionTick := 0
-global LastF5Tick := 0
-global AwaitingSwap := false
-global ExpectedWeapon := ""
-global SwapPendingTick := 0
-global SwapWaitMs := ScaleMs(1800)
-global SwapConfirmMs := ScaleMs(450)
-global CurrentWeapon := ""
-global LogFilePath := ""
-global F5Armed := false
-global F5ArmedTick := 0
-global OpenerActive := false
-global OpenerInProgress := false
-global OpenerStep := 1
+global TargetWindow := "ahk_exe Gw2-64.exe" ; 目标窗口（GW2 可执行），仅在此窗口激活时脚本生效
+global Running := false ; 脚本循环是否开启（由 MButton 切换）
+global BusyUntil := 0 ; 时间戳：在此时间前不发起新动作（用于施放时间与缓冲）
+global TimingScale := 1.1 ; 全局时间缩放因子（用于 ScaleMs 调整所有延迟）
+global LastWeapon := "" ; 上一次检测到的武器（"GS" 或 "DS"）
+global LastSwapAttempt := 0 ; 最近一次尝试换武的时间戳（防止短时间内重复尝试）
+global LastWeaponSwapTick := 0 ; 最近一次确认（或更新）为换武的时间戳
+global LastAction := "" ; 最近一次发送的动作标识（例如 "4"、"F5"）
+global LastActionTick := 0 ; 上次发送动作的时间戳
+global LastF5Tick := 0 ; 最近一次 F5 动作的时间戳（特殊追踪）
+global AwaitingSwap := false ; 是否处于等待像素确认换武的中间状态（UI 像素未确认）
+global ExpectedWeapon := "" ; 若 AwaitingSwap 为 true，此字段记录期望切换到的武器
+global SwapPendingTick := 0 ; 何时开始等待换武确认（用于超时判断）
+global SwapWaitMs := ScaleMs(1100) ; 等待像素确认换武的最大超时（毫秒）
+global SwapConfirmMs := ScaleMs(550) ; 确认换武成功所需的最小等待时间（毫秒）
+global CurrentWeapon := "" ; 当前内部记录的武器状态（"GS" 或 "DS"）
+global LogFilePath := "" ; 记录日志的文件路径（每次启动会创建新日志）
+global F5Armed := false ; 是否处于可配合 F5 的“蓄力/已装填”状态（opener 特殊逻辑）
+global F5ArmedTick := 0 ; 标记 F5Armed 的时间戳
+global OpenerActive := false ; 是否启用开手序列（脚本启动时根据武器决定）
+global OpenerInProgress := false ; 运行 RunOpener 时的互斥标志，防止并发执行
+global OpenerStep := 1 ; OpenerPlan 的当前执行索引（从 1 开始）
 global OpenerPlan := [
-    ["3"],
+    ["3"],       ; 每个子数组为一组按键，按顺序发送
     ["5", "2"],
-    ["SWAP"],
+    ["SWAP"],    ; 特殊标记 SWAP 表示执行换武
     ["2"],
     ["4", "F5"],
     ["6", "4"],
@@ -130,14 +130,14 @@ global DSDelays := Map(
 ; Dagger/Sword: 2 5 -> c 5 2 -> filler -> 2 -> filler -> 2 -> filler -> 5 3 2 -> swap
 ; Readiness is only used to decide whether the current planned step can be cast
 ; and where to re-enter the loop after starting mid-rotation.
-global GSPlan := ["4", "2", "3", "FILL", "2", "FILL", "3", "4", "2", "SWAP"]
-global DSPlan := ["2", "5", "6", "5", "2", "FILL", "2", "FILL", "2", "FILL", "5", "3", "2", "SWAP"]
+global GSPlan := ["4", "2", "3", "FILL", "2", "FILL", "3", "4", "2", "SWAP"] ; GS（Greatsword）循环计划序列：按键或特殊标记（FILL/SWAP）
+global DSPlan := ["2", "5", "6", "5", "2", "FILL", "2", "FILL", "2", "FILL", "5", "3", "2", "SWAP"] ; DS（Dagger+Sword）循环计划
 
-global GsStep := 0
-global DsStep := 0
+global GsStep := 0 ; 当前在 GSPlan 中的索引（1 起算）；0 表示尚未初始化或待恢复
+global DsStep := 0 ; 当前在 DSPlan 中的索引（逻辑同上）
 
 ; Filler windows use q/e/z, then r on full charges, then auto attack.
-global FillerPriority := ["7", "8", "0"]
+global FillerPriority := ["7", "8", "0"] ; 当主序列不可用时尝试的填充技能优先级（例如 q/e/z）
 
 if (A_Args.Length && A_Args[1] = "--syntax-check")
     ExitApp()
@@ -480,17 +480,7 @@ CastAction(action, weapon) {
         F5Armed := true
         F5ArmedTick := A_TickCount
     }
-    if (action = "SWAP") {
-        ; Immediate swap: update internal weapon tracking without waiting for pixel confirmation
-        ExpectedWeapon := ""
-        CurrentWeapon := (weapon = "GS") ? "DS" : "GS"
-        LastWeapon := CurrentWeapon
-        LastWeaponSwapTick := A_TickCount
-        AwaitingSwap := false
-        SwapPendingTick := 0
-        SetLoopStep(CurrentWeapon, 1)
-        BusyUntil := A_TickCount + ScaleMs(150)
-    }
+    
     return true
 }
 
@@ -527,7 +517,7 @@ GetActionDelay(action, weapon) {
     global GSDelays, DSDelays, TimingScale
 
     if (action = "SWAP")
-        return ScaleMs(150)
+        return ScaleMs(550)
 
     if (weapon = "GS" && GSDelays.Has(action))
         return ScaleMs(GSDelays[action])
@@ -542,7 +532,7 @@ GetActionBuffer(action) {
     global CastBuffer, UtilityBuffer
 
     if (action = "SWAP")
-        return ScaleMs(180)
+        return ScaleMs(550)
 
     if RegExMatch(action, "^[1-5]$")
         return ScaleMs(CastBuffer)
@@ -572,29 +562,10 @@ SetLoopStep(weapon, step) {
     }
 }
 
-GetResumeStep(weapon) {
-    if (weapon = "GS") {
-        if (IsReady("4") && IsReady("2"))
-            return 1
-        if (IsReady("3") && !IsReady("2"))
-            return 3
-        if (IsReady("2") && !IsReady("3") && !IsReady("4"))
-            return 5
-        if (IsReady("3") && IsReady("4") && !IsReady("2"))
-            return 7
-        return 4
-    }
-
-    if (IsReady("2") && IsReady("5"))
-        return 1
-    if (IsReady("6") && IsReady("5") && IsReady("2") && !IsReady("3"))
-        return 3
-    if (IsReady("2") && !IsReady("5"))
-        return 7
-    if (IsReady("5") && IsReady("3"))
-        return 11
-    return 6
-}
+; Resume-step detection removed.
+; The script no longer attempts to infer a resume step from skill readiness.
+; On (re)start it will use DetectWeapon() and start the corresponding loop
+; (Opener for DS; GS loop for GS).
 
 HasFullIllusions() {
     global IllusionIndicator, FullIllusionColor
@@ -665,8 +636,8 @@ ShowDebugState() {
         . " Expected=" ExpectedWeapon
         . "`nOpener=" (OpenerActive ? "1" : "0")
         . " Step=" OpenerStep
-        . "`nGS step=" GetLoopStep("GS") " / resume=" GetResumeStep("GS")
-        . "`nDS step=" GetLoopStep("DS") " / resume=" GetResumeStep("DS")
+        . "`nGS step=" GetLoopStep("GS")
+        . "`nDS step=" GetLoopStep("DS")
         . "`nBusyUntil=" BusyUntil
         . " Running=" (Running ? "1" : "0")
         . "`nReady: 1=" ReadyFlag("1")
@@ -732,26 +703,33 @@ RunOpener(startWeapon) {
         group := OpenerPlan[i]
 
         if (group.Length = 1 && group[1] = "SWAP") {
-            ; perform swap using direct send
-            SendEvent(ActionSend["SWAP"])
-            LogEvent("SWAP", weapon)
-
-            ; Immediately consider the swap done (no pixel confirmation) and switch internal state
-            newWeapon := (weapon = "GS") ? "DS" : "GS"
-            CurrentWeapon := newWeapon
-            LastWeapon := newWeapon
-            LastWeaponSwapTick := A_TickCount
-            AwaitingSwap := false
-            ExpectedWeapon := ""
-            SwapPendingTick := 0
-
-            ; reset loop position for the new weapon and give a short buffer
-            SetLoopStep(CurrentWeapon, 1)
-            BusyUntil := A_TickCount + ScaleMs(120)
-
-            OpenerStep := i + 1
-            i += 1
-            continue
+            ; perform swap: send swap via CastAction and wait for pixel confirmation before proceeding
+            if (A_TickCount - LastSwapAttempt >= SwapRetryMs && IsReady("SWAP")) {
+                LastSwapAttempt := A_TickCount
+                if CastAction("SWAP", weapon) {
+                    ; wait until RotationTick confirms the swap (clearing AwaitingSwap) or timeout
+                    start := A_TickCount
+                    while (AwaitingSwap) {
+                        if !Running || !WinActive(TargetWindow)
+                            break
+                        if (A_TickCount - start >= SwapWaitMs) {
+                            ; timeout: clear awaiting state and abort waiting
+                            AwaitingSwap := false
+                            SwapPendingTick := 0
+                            ExpectedWeapon := ""
+                            break
+                        }
+                        Sleep(10)
+                    }
+                    ; ensure loop position reset for whichever weapon is current
+                    SetLoopStep(CurrentWeapon, 1)
+                    BusyUntil := A_TickCount + ScaleMs(120)
+                    OpenerStep := i + 1
+                    i += 1
+                    continue
+                }
+            }
+            return
         }
 
         ; non-swap group: use existing executor
