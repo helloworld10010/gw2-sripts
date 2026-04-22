@@ -48,7 +48,8 @@ global OpenerPlan := [
     ["SWAP"],    ; 特殊标记 SWAP 表示执行换武
     ["2"],
     ["4", "F5"],
-    ["6", "4"],
+    ["6"],
+    ["4"],
     ["7", "8"],
     ["2", "3"],
     ["0"],
@@ -139,7 +140,7 @@ global UtilityDelays := Map(
     "0", 1000,
 )
 
-global GSPlan := ["4", "2", "3", "FILL", "2", "FILL", "3", "4", "2", "SWAP"] ; GS（Greatsword）循环计划序列：按键或特殊标记（FILL/SWAP）
+global GSPlan := ["4", "2", "3", "FILL", "2", "FILL", "3", "4","6","4", "2", "SWAP"] ; GS（Greatsword）循环计划序列：按键或特殊标记（FILL/SWAP）
 global DSPlan := ["5","2","3","FILL","2","FILL","2","5","3","SWAP"] ; DS（Dagger+Sword）循环计划
 
 global GsStep := 0 ; 当前在 GSPlan 中的索引（1 起算）；0 表示尚未初始化或待恢复
@@ -245,25 +246,15 @@ RotationTick() {
         ; if AwaitingSwap is true, allow detection below to confirm swap
     }
 
-    ; quick sync: if UI shows a different weapon than internal state, adopt it immediately
-    detected := DetectWeapon()
-    if (CurrentWeapon == "") {
-        CurrentWeapon := detected
-        LastWeapon := CurrentWeapon
-    } else if (detected != CurrentWeapon) {
-        CurrentWeapon := detected
-        LastWeapon := CurrentWeapon
-        SetLoopStep(CurrentWeapon, 1)
-        BusyUntil := A_TickCount + ScaleMs(80)
-    }
-
+    ; weapon detection is performed only after a SWAP; initial detection done on start/reset
     weapon := CurrentWeapon
 
     if F5Armed && (A_TickCount - F5ArmedTick > 1500)
         F5Armed := false
 
     if AwaitingSwap {
-        ; use detected (from quick sync) to confirm swap instead of assuming success
+        detected := DetectWeapon()
+        ; use detected to confirm swap
         if (detected == ExpectedWeapon && (A_TickCount - SwapPendingTick >= SwapConfirmMs)) {
             CurrentWeapon := detected
             weapon := CurrentWeapon
@@ -491,6 +482,17 @@ CastAction(action, weapon) {
     castMs := GetActionDelay(action, weapon)
     bufferMs := GetActionBuffer(action)
 
+    ; quick refresh detection immediately before sending to avoid using a stale weapon state
+    if (!AwaitingSwap) {
+        detected := DetectWeapon()
+        if (detected != CurrentWeapon) {
+            CurrentWeapon := detected
+            LastWeapon := detected
+            ; DO NOT reset loop step mid-cast here to avoid disrupting sequence
+        }
+        weapon := CurrentWeapon
+    }
+
     SendDuringCast(action, castMs, weapon)
     BusyUntil := A_TickCount + bufferMs
     LastAction := action
@@ -584,15 +586,33 @@ GetActionBuffer(action) {
     return ScaleMs(UtilityBuffer)
 }
 
-DetectWeapon() {
+DetectWeapon(stable := false, samples := 5, delayMs := 18) {
     global TargetWindow, Running, BusyUntil, TimingScale, LastWeapon, LastSwapAttempt, LastWeaponSwapTick, LastAction, LastActionTick, LastF5Tick, AwaitingSwap, ExpectedWeapon, SwapPendingTick, SwapWaitMs, SwapConfirmMs, CurrentWeapon, LogFilePath, F5Armed, F5ArmedTick, OpenerActive, OpenerInProgress, OpenerStep, OpenerPlan, CastBuffer, UtilityBuffer, SwapRetryMs, SwapSend, CastRepeatMs, WeaponIndicator, IllusionIndicator, FullIllusionColor, PowerSpikeIndicator, PowerSpikeFullColor, SkillPixels, ActionSend, GSDelays, DSDelays, GSPlan, DSPlan, GsStep, DsStep, FillerPriority
-    global WeaponIndicator
+    global WeaponIndicator, WeaponIndicatorColor, PixelDebugVisible
 
-    color := PixelGetColor(WeaponIndicator[1], WeaponIndicator[2], "RGB")
-    detected := (color == WeaponIndicatorColor) ? "GS" : "DS"
-    if (PixelDebugVisible) {
-        PixelDebugPush("Weapon pixel @" . WeaponIndicator[1] . "," . WeaponIndicator[2] . " color=0x" . Format("{:06X}", color) . " -> " . detected . " target=0x" . Format("{:06X}", WeaponIndicatorColor))
+    if (!stable) {
+        color := PixelGetColor(WeaponIndicator[1], WeaponIndicator[2], "RGB")
+        detected := (color == WeaponIndicatorColor) ? "GS" : "DS"
+        if (PixelDebugVisible) {
+            PixelDebugPush("Weapon pixel @" . WeaponIndicator[1] . "," . WeaponIndicator[2] . " color=0x" . Format("{:06X}", color) . " -> " . detected . " target=0x" . Format("{:06X}", WeaponIndicatorColor))
+        }
+        return detected
     }
+
+    ; stable sampling: majority of exact matches to WeaponIndicatorColor => GS
+    gsCount := 0
+    samplesInfo := ""
+    i := 0
+    while (i < samples) {
+        col := PixelGetColor(WeaponIndicator[1], WeaponIndicator[2], "RGB")
+        samplesInfo .= " 0x" . Format("{:06X}", col)
+        if (col == WeaponIndicatorColor)
+            gsCount += 1
+        i += 1
+        Sleep(delayMs)
+    }
+    detected := (gsCount * 2 >= samples) ? "GS" : "DS"
+    PixelDebugPush("Weapon pixel stable check counts=" . gsCount . "/" . samples . " samples=" . samplesInfo . " -> " . detected)
     return detected
 }
 
@@ -683,9 +703,9 @@ ClearTip() {
     ToolTip()
 }
 
-; Persistent pixel debug log (chat-like scrolling tooltip)
+; Persistent pixel debug log (file-based)
 PixelDebugPush(msg) {
-    global PixelDebugLines, PixelDebugMaxLines, PixelDebugVisible
+    global PixelDebugLines, PixelDebugMaxLines, PixelDebugVisible, LogFilePath
     if (!PixelDebugVisible)
         return
 
@@ -705,11 +725,9 @@ PixelDebugPush(msg) {
     while (PixelDebugLines.Length > PixelDebugMaxLines)
         PixelDebugLines.RemoveAt(1)
 
-    text := ""
-    for index, lineText in PixelDebugLines
-        text .= lineText . "`n"
-
-    ToolTip(text, 10, 10)
+    ; append to per-run log file so messages persist for analysis
+    outFile := (LogFilePath != "") ? LogFilePath : "D:\\Code\\GW2Scripts\\chrono_log.txt"
+    FileAppend(line . "`n", outFile)
 }
 
 PixelDebugClear() {
@@ -719,11 +737,12 @@ PixelDebugClear() {
 }
 
 PixelDebugToggle() {
-    global PixelDebugVisible
+    global PixelDebugVisible, LogFilePath
     PixelDebugVisible := !PixelDebugVisible
-    if (!PixelDebugVisible)
-        ToolTip()
-    else
+    if (!PixelDebugVisible) {
+        outFile := (LogFilePath != "") ? LogFilePath : "D:\\Code\\GW2Scripts\\chrono_log.txt"
+        FileAppend("[" . A_Now . "] PIXEL: PixelDebug: OFF`n", outFile)
+    } else
         PixelDebugPush("PixelDebug: ON")
 
     ShowTip("PixelDebug " . (PixelDebugVisible ? "ON" : "OFF"))
