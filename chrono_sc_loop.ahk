@@ -132,16 +132,13 @@ global DSDelays := Map(
     "5", 1050
 )
 
-; Snow Crows loop:
-; Greatsword: 4 2 -> 3 -> filler -> 2 -> filler -> 3 4 2 -> swap
-; Dagger/Sword: 2 5 -> c 5 2 -> filler -> 2 -> filler -> 2 -> filler -> 5 3 2 -> swap
-; Readiness is only used to decide whether the current planned step can be cast
-; and where to re-enter the loop after starting mid-rotation.
 global GSPlan := ["4", "2", "3", "FILL", "2", "FILL", "3", "4", "2", "SWAP"] ; GS（Greatsword）循环计划序列：按键或特殊标记（FILL/SWAP）
-global DSPlan := ["2", "5", "6", "5", "2", "FILL", "2", "FILL", "2", "FILL", "5", "3", "2", "SWAP"] ; DS（Dagger+Sword）循环计划
+global OPENERPlan := ["3", "5", "2", "SWAP","2", "F5", "4", "6", "4", "FILL", "4", "FILL","6","4","2","3", "SWAP"] ; OPENER（开手序列）循环计划
+global DSPlan := ["5","2","3","FILL","2","FILL","2","5","3","SWAP"] ; DS（Dagger+Sword）循环计划
 
 global GsStep := 0 ; 当前在 GSPlan 中的索引（1 起算）；0 表示尚未初始化或待恢复
 global DsStep := 0 ; 当前在 DSPlan 中的索引（逻辑同上）
+global OpenerStep := 0 ; 当前在 OPENERPlan 中的索引（逻辑同上）
 
 ; Filler windows use q/e/z, then r on full charges, then auto attack.
 global FillerPriority := ["7", "8", "0"] ; 当主序列不可用时尝试的填充技能优先级（例如 q/e/z）
@@ -858,8 +855,8 @@ RunOpener(startWeapon) {
         i += 1
     }
 
-    ; on completion (or abort), ensure DS loop starts at 1
-    SetLoopStep("DS", 1)
+    ; on completion (or abort), ensure current weapon loop starts at 1
+    SetLoopStep(CurrentWeapon, 1)
     OpenerActive := false
     OpenerStep := 1
 }
