@@ -51,7 +51,7 @@ global OpenerPlan := [
     ["6", "4"],
     ["7", "8"],
     ["2", "3"],
-    ["0", "F5"],
+    ["0"],
     ["4", "7"],
     ["8", "6"],
     ["4", "2"],
@@ -132,13 +132,18 @@ global DSDelays := Map(
     "5", 1050
 )
 
+global UtilityDelays := Map(
+    "6", 1000,
+    "7", 750,
+    "8", 700,
+    "0", 1000,
+)
+
 global GSPlan := ["4", "2", "3", "FILL", "2", "FILL", "3", "4", "2", "SWAP"] ; GS（Greatsword）循环计划序列：按键或特殊标记（FILL/SWAP）
-global OPENERPlan := ["3", "5", "2", "SWAP","2", "F5", "4", "6", "4", "FILL", "4", "FILL","6","4","2","3", "SWAP"] ; OPENER（开手序列）循环计划
 global DSPlan := ["5","2","3","FILL","2","FILL","2","5","3","SWAP"] ; DS（Dagger+Sword）循环计划
 
 global GsStep := 0 ; 当前在 GSPlan 中的索引（1 起算）；0 表示尚未初始化或待恢复
 global DsStep := 0 ; 当前在 DSPlan 中的索引（逻辑同上）
-global OpenerStep := 0 ; 当前在 OPENERPlan 中的索引（逻辑同上）
 
 ; Filler windows use q/e/z, then r on full charges, then auto attack.
 global FillerPriority := ["7", "8", "0"] ; 当主序列不可用时尝试的填充技能优先级（例如 q/e/z）
@@ -548,10 +553,14 @@ SendDuringCast(action, castMs, weapon) {
 
 GetActionDelay(action, weapon) {
     global TargetWindow, Running, BusyUntil, TimingScale, LastWeapon, LastSwapAttempt, LastWeaponSwapTick, LastAction, LastActionTick, LastF5Tick, AwaitingSwap, ExpectedWeapon, SwapPendingTick, SwapWaitMs, SwapConfirmMs, CurrentWeapon, LogFilePath, F5Armed, F5ArmedTick, OpenerActive, OpenerInProgress, OpenerStep, OpenerPlan, CastBuffer, UtilityBuffer, SwapRetryMs, SwapSend, CastRepeatMs, WeaponIndicator, IllusionIndicator, FullIllusionColor, PowerSpikeIndicator, PowerSpikeFullColor, SkillPixels, ActionSend, GSDelays, DSDelays, GSPlan, DSPlan, GsStep, DsStep, FillerPriority
-    global GSDelays, DSDelays, TimingScale
+    global GSDelays, DSDelays, UtilityDelays, TimingScale
 
     if (action == "SWAP")
-        return 0
+        return ScaleMs(800)
+
+    ; Utility-level delays take precedence if defined
+    if (IsObject(UtilityDelays) && UtilityDelays.Has(action))
+        return ScaleMs(UtilityDelays[action])
 
     if (weapon == "GS" && GSDelays.Has(action))
         return ScaleMs(GSDelays[action])
