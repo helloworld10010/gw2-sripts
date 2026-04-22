@@ -1,8 +1,0 @@
-[START] 2026-04-21 21:59:15
-[2026-04-21 21:59:15.109] SEND: START key= weapon=GS BusyUntil=798692192 Opener=0
-[2026-04-21 21:59:15.343] SEND: 2 key=2 weapon=DS BusyUntil=798692338 
-[2026-04-21 21:59:15.578] SEND: 5 key=f weapon=DS BusyUntil=798692458 
-[2026-04-21 21:59:17.046] SEND: F1 key={F1} weapon=GS BusyUntil=798694009 
-[2026-04-21 21:59:17.328] SEND: F1 key={F1} weapon=DS BusyUntil=798694291 
-[2026-04-21 21:59:17.625] SEND: 7 key=q weapon=DS BusyUntil=798694427 
-[2026-04-21 21:59:17.937] SEND: F2 key={F2} weapon=DS BusyUntil=0 
