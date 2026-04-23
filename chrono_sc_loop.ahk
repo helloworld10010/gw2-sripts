@@ -40,8 +40,16 @@ global LogFilePath := "" ; 记录日志的文件路径（每次启动会创建�
 global F5Armed := false ; 是否处于可配合 F5 的“蓄力/已装填”状态（opener 特殊逻辑）
 global F5ArmedTick := 0 ; 标记 F5Armed 的时间戳
 global OpenerActive := false ; 是否启用开手序列（脚本启动时根据武器决定）
-global OpenerInProgress := false ; 运行 RunOpener 时的互斥标志，防止并发执行
 global OpenerStep := 1 ; OpenerPlan 的当前执行索引（从 1 开始）
+global OpenerSubStep := 1 ; 当前组内的子索引
+global BurstActive := false ; 是否处于爆发模式
+global BurstStep := 1 ; 爆发模式当前进度
+global BurstActionTick := 0 ; 记录当前爆发动作开始的时间戳
+global BurstRiftActive := false ; 是否已开启裂隙
+global BurstPlan := ["4", "F5", "2", "3", "5", "7", "8", "0", "6", "4", "2", "3", "4", "2", "3", "5", "7", "8", "0", "6", "4", "2", "3"] 
+global RepeatingKey := "" ; 当前正在重复点击的按键
+global RepeatUntil := 0 ; 重复点击的截止时间戳
+global LastRepeatTick := 0 ; 上次重复点击的时间戳
 global OpenerPlan := [
     ["3"],       ; 每个子数组为一组按键，按顺序发送
     ["5", "2"],
@@ -171,9 +179,60 @@ F10:: {
     ExitApp()
 }
 
+RunBurst(weapon) {
+    global BurstPlan, BurstStep, BurstActive, BurstActionTick, BusyUntil, BurstRiftActive
+
+    if (BurstStep > BurstPlan.Length) {
+        BurstActive := false
+        BurstStep := 1
+        BurstRiftActive := false
+        return
+    }
+
+    action := BurstPlan[BurstStep]
+    isInstant := RegExMatch(action, "^(F[1-5]|9)$")
+
+    ; 1. 基础忙碌检查 (非瞬发技能需要等待 GCD)
+    if (!isInstant && A_TickCount < BusyUntil) {
+        return
+    }
+
+    ; 2. 特殊处理: F5 延迟开启 (4 读条 500ms 后触发)
+    if (action == "F5") {
+        if (A_TickCount - BurstActionTick < 500) {
+            return
+        }
+        if (!IsReady("F5")) {
+            ; 如果 F5 还没好（可能因为之前的操作干扰），我们不能跳过它，
+            ; 因为它是爆发的核心。如果超时太久则取消整个爆发。
+            if (A_TickCount - BurstActionTick > 2000) {
+                BurstActive := false
+            }
+            return
+        }
+    }
+
+    ; 3. 贪婪逻辑: 如果不是 F5 或 4 (这两个是触发器)，且技能没就绪，直接跳过试下一个
+    if (action != "F5" && action != "4") {
+        if (!IsReady(action)) {
+            BurstStep += 1
+            return ; 下一帧尝试序列中的下一个技能
+        }
+    }
+
+    ; 4. 执行动作
+    if CastAction(action, weapon) {
+        if (action == "F5") {
+            BurstRiftActive := true
+        }
+        BurstStep += 1
+        BurstActionTick := A_TickCount
+    }
+}
+
 ToggleRotation() {
-    global TargetWindow, Running, BusyUntil, TimingScale, LastWeapon, LastSwapAttempt, LastWeaponSwapTick, LastAction, LastActionTick, LastF5Tick, AwaitingSwap, ExpectedWeapon, SwapPendingTick, SwapWaitMs, SwapConfirmMs, CurrentWeapon, LogFilePath, F5Armed, F5ArmedTick, OpenerActive, OpenerInProgress, OpenerStep, OpenerPlan, CastBuffer, UtilityBuffer, SwapRetryMs, SwapSend, CastRepeatMs, WeaponIndicator, IllusionIndicator, FullIllusionColor, PowerSpikeIndicator, PowerSpikeFullColor, SkillPixels, ActionSend, GSDelays, DSDelays, GSPlan, DSPlan, GsStep, DsStep, FillerPriority
-    global Running, BusyUntil, GsStep, DsStep, AwaitingSwap, ExpectedWeapon, CurrentWeapon, LastWeapon, OpenerActive, OpenerStep, F5Armed, F5ArmedTick, LogFilePath
+    global Running, BusyUntil, GsStep, DsStep, AwaitingSwap, ExpectedWeapon, CurrentWeapon, LastWeapon, OpenerActive, OpenerStep, OpenerSubStep, RepeatingKey, RepeatUntil, F5Armed, F5ArmedTick, LogFilePath
+    global BurstActive, BurstStep, BurstRiftActive
 
     Running := !Running
     BusyUntil := 0
@@ -187,6 +246,12 @@ ToggleRotation() {
         LastWeapon := CurrentWeapon
         OpenerActive := (CurrentWeapon == "DS")
         OpenerStep := 1
+        OpenerSubStep := 1
+        BurstActive := false
+        BurstStep := 1
+        BurstRiftActive := false
+        RepeatingKey := ""
+        RepeatUntil := 0
         F5Armed := false
         F5ArmedTick := 0
 
@@ -204,8 +269,8 @@ ToggleRotation() {
 }
 
 ResetLoopState() {
-    global TargetWindow, Running, BusyUntil, TimingScale, LastWeapon, LastSwapAttempt, LastWeaponSwapTick, LastAction, LastActionTick, LastF5Tick, AwaitingSwap, ExpectedWeapon, SwapPendingTick, SwapWaitMs, SwapConfirmMs, CurrentWeapon, LogFilePath, F5Armed, F5ArmedTick, OpenerActive, OpenerInProgress, OpenerStep, OpenerPlan, CastBuffer, UtilityBuffer, SwapRetryMs, SwapSend, CastRepeatMs, WeaponIndicator, IllusionIndicator, FullIllusionColor, PowerSpikeIndicator, PowerSpikeFullColor, SkillPixels, ActionSend, GSDelays, DSDelays, GSPlan, DSPlan, GsStep, DsStep, FillerPriority
-    global GsStep, DsStep, LastWeapon, LastSwapAttempt, LastWeaponSwapTick, BusyUntil, LastAction, LastActionTick, LastF5Tick, AwaitingSwap, ExpectedWeapon, SwapPendingTick, CurrentWeapon, F5Armed, F5ArmedTick, OpenerActive, OpenerStep
+    global GsStep, DsStep, LastWeapon, LastSwapAttempt, LastWeaponSwapTick, BusyUntil, LastAction, LastActionTick, LastF5Tick, AwaitingSwap, ExpectedWeapon, SwapPendingTick, CurrentWeapon, F5Armed, F5ArmedTick, OpenerActive, OpenerStep, OpenerSubStep
+    global BurstActive, BurstStep
 
     GsStep := 0
     DsStep := 0
@@ -225,6 +290,9 @@ ResetLoopState() {
     F5ArmedTick := 0
     OpenerActive := false
     OpenerStep := 1
+    OpenerSubStep := 1
+    BurstActive := false
+    BurstStep := 1
 }
 
 RotationTick() {
@@ -237,10 +305,32 @@ RotationTick() {
     if !WinActive(TargetWindow)
         return
 
+    ; --- 优先级 1: 爆发模式执行 ---
+    if BurstActive {
+        RunBurst(weapon)
+        return
+    }
+
+    ; --- 优先级 2: 爆发模式触发检测 (GS + F5 + 4 + 6 + 满幻影) ---
+    if (!OpenerActive && weapon == "GS" && IsReady("F5") && IsReady("4") && IsReady("6") && HasFullIllusions()) {
+        BurstActive := true
+        BurstStep := 1
+        RunBurst(weapon)
+        return
+    }
+
+    ; --- 优先级 3: 穿插瞬发技能 ---
+
+    ; Handle non-blocking key repetition (spamming the key during cast)
+    if (A_TickCount < RepeatUntil && RepeatingKey != "") {
+        if (A_TickCount - LastRepeatTick >= CastRepeatMs) {
+            SendEvent(RepeatingKey)
+            LastRepeatTick := A_TickCount
+        }
+    }
+
     if (A_TickCount < BusyUntil) {
         if (!AwaitingSwap) {
-            if (!OpenerActive && TryPrioritySkills(CurrentWeapon))
-                return
             return
         }
         ; if AwaitingSwap is true, allow detection below to confirm swap
@@ -296,12 +386,7 @@ RotationTick() {
         return
 
     if OpenerActive {
-        global OpenerInProgress
-        if !OpenerInProgress {
-            OpenerInProgress := true
-            RunOpener(CurrentWeapon)
-            OpenerInProgress := false
-        }
+        AdvanceOpener(weapon)
         return
     }
 
@@ -309,92 +394,43 @@ RotationTick() {
         return
 }
 
-TryPrioritySkills(weapon) {
-    global TargetWindow, Running, BusyUntil, TimingScale, LastWeapon, LastSwapAttempt, LastWeaponSwapTick, LastAction, LastActionTick, LastF5Tick, AwaitingSwap, ExpectedWeapon, SwapPendingTick, SwapWaitMs, SwapConfirmMs, CurrentWeapon, LogFilePath, F5Armed, F5ArmedTick, OpenerActive, OpenerInProgress, OpenerStep, OpenerPlan, CastBuffer, UtilityBuffer, SwapRetryMs, SwapSend, CastRepeatMs, WeaponIndicator, IllusionIndicator, FullIllusionColor, PowerSpikeIndicator, PowerSpikeFullColor, SkillPixels, ActionSend, GSDelays, DSDelays, GSPlan, DSPlan, GsStep, DsStep, FillerPriority
-    return false
-}
+AdvanceOpener(weapon) {
+    global OpenerPlan, OpenerStep, OpenerSubStep, BusyUntil, OpenerActive, LastSwapAttempt, SwapRetryMs, AwaitingSwap, Running, TargetWindow
 
-TryOpenerSequence(weapon) {
-    global TargetWindow, Running, BusyUntil, TimingScale, LastWeapon, LastSwapAttempt, LastWeaponSwapTick, LastAction, LastActionTick, LastF5Tick, AwaitingSwap, ExpectedWeapon, SwapPendingTick, SwapWaitMs, SwapConfirmMs, CurrentWeapon, LogFilePath, F5Armed, F5ArmedTick, OpenerActive, OpenerInProgress, OpenerStep, OpenerPlan, CastBuffer, UtilityBuffer, SwapRetryMs, SwapSend, CastRepeatMs, WeaponIndicator, IllusionIndicator, FullIllusionColor, PowerSpikeIndicator, PowerSpikeFullColor, SkillPixels, ActionSend, GSDelays, DSDelays, GSPlan, DSPlan, GsStep, DsStep, FillerPriority
-    global OpenerPlan, OpenerStep, LastSwapAttempt, SwapRetryMs, OpenerActive
-
-    if (OpenerStep < 1 || OpenerStep > OpenerPlan.Length)
-        return false
+    if (OpenerStep > OpenerPlan.Length) {
+        OpenerActive := false
+        OpenerStep := 1
+        OpenerSubStep := 1
+        return
+    }
 
     group := OpenerPlan[OpenerStep]
+    
+    if (OpenerSubStep > group.Length) {
+        OpenerStep += 1
+        OpenerSubStep := 1
+        return
+    }
 
-    if (group.Length == 1 && group[1] == "SWAP") {
+    action := group[OpenerSubStep]
+
+    if (action == "SWAP") {
         if (A_TickCount - LastSwapAttempt >= SwapRetryMs && IsReady("SWAP")) {
             LastSwapAttempt := A_TickCount
             if CastAction("SWAP", weapon) {
-                OpenerStep += 1
-                return true
+                OpenerSubStep += 1
             }
         }
-        return false
+        return
     }
 
-    if !ExecuteStepGroup(group, weapon)
-        return false
-
-    OpenerStep += 1
-    return true
+    if CastAction(action, weapon) {
+        OpenerSubStep += 1
+    }
 }
 
-ExecuteStepGroup(group, weapon) {
-    global TargetWindow, Running, BusyUntil, TimingScale, LastWeapon, LastSwapAttempt, LastWeaponSwapTick, LastAction, LastActionTick, LastF5Tick, AwaitingSwap, ExpectedWeapon, SwapPendingTick, SwapWaitMs, SwapConfirmMs, CurrentWeapon, LogFilePath, F5Armed, F5ArmedTick, OpenerActive, OpenerInProgress, OpenerStep, OpenerPlan, CastBuffer, UtilityBuffer, SwapRetryMs, SwapSend, CastRepeatMs, WeaponIndicator, IllusionIndicator, FullIllusionColor, PowerSpikeIndicator, PowerSpikeFullColor, SkillPixels, ActionSend, GSDelays, DSDelays, GSPlan, DSPlan, GsStep, DsStep, FillerPriority
-    global ActionSend, BusyUntil, Running, TargetWindow, CastRepeatMs, LastAction, LastActionTick
+; Removed redundant blocking functions: RunOpener, ExecuteStepGroup, TryOpenerSequence, TryPrioritySkills, ShouldCastF5
 
-    castSkill := ""
-
-    for _, action in group {
-        if (action == "F5") {
-            SendEvent(ActionSend[action])
-            LogEvent(action, weapon)
-            LastAction := action
-            LastActionTick := A_TickCount
-            continue
-        }
-
-        if !ActionSend.Has(action)
-            return false
-
-        SendEvent(ActionSend[action])
-        LogEvent(action, weapon)
-        LastAction := action
-        LastActionTick := A_TickCount
-
-        if (castSkill == "" && GetActionDelay(action, weapon) > 0)
-            castSkill := action
-    }
-
-    if (castSkill == "")
-        return true
-
-    castMs := GetActionDelay(castSkill, weapon)
-    bufferMs := GetActionBuffer(castSkill)
-    repeatKey := ActionSend[castSkill]
-    startTick := A_TickCount
-    nextTick := startTick + CastRepeatMs
-
-    while (A_TickCount - startTick < castMs) {
-        if !Running
-            return false
-        if !WinActive(TargetWindow)
-            return false
-
-        if (A_TickCount >= nextTick) {
-            SendEvent(repeatKey)
-            nextTick += CastRepeatMs
-            continue
-        }
-
-        Sleep(10)
-    }
-
-    BusyUntil := A_TickCount + bufferMs
-    return true
-}
 
 TrySequence(weapon) {
     global TargetWindow, Running, BusyUntil, TimingScale, LastWeapon, LastSwapAttempt, LastWeaponSwapTick, LastAction, LastActionTick, LastF5Tick, AwaitingSwap, ExpectedWeapon, SwapPendingTick, SwapWaitMs, SwapConfirmMs, CurrentWeapon, LogFilePath, F5Armed, F5ArmedTick, OpenerActive, OpenerInProgress, OpenerStep, OpenerPlan, CastBuffer, UtilityBuffer, SwapRetryMs, SwapSend, CastRepeatMs, WeaponIndicator, IllusionIndicator, FullIllusionColor, PowerSpikeIndicator, PowerSpikeFullColor, SkillPixels, ActionSend, GSDelays, DSDelays, GSPlan, DSPlan, GsStep, DsStep, FillerPriority
@@ -473,8 +509,8 @@ TryFiller(weapon) {
 }
 
 CastAction(action, weapon) {
-    global TargetWindow, Running, BusyUntil, TimingScale, LastWeapon, LastSwapAttempt, LastWeaponSwapTick, LastAction, LastActionTick, LastF5Tick, AwaitingSwap, ExpectedWeapon, SwapPendingTick, SwapWaitMs, SwapConfirmMs, CurrentWeapon, LogFilePath, F5Armed, F5ArmedTick, OpenerActive, OpenerInProgress, OpenerStep, OpenerPlan, CastBuffer, UtilityBuffer, SwapRetryMs, SwapSend, CastRepeatMs, WeaponIndicator, IllusionIndicator, FullIllusionColor, PowerSpikeIndicator, PowerSpikeFullColor, SkillPixels, ActionSend, GSDelays, DSDelays, GSPlan, DSPlan, GsStep, DsStep, FillerPriority
-    global ActionSend, BusyUntil, LastAction, LastActionTick, LastF5Tick, AwaitingSwap, ExpectedWeapon, SwapPendingTick, CurrentWeapon, LastWeapon, LastWeaponSwapTick, F5Armed, F5ArmedTick, OpenerActive
+    global ActionSend, BusyUntil, LastAction, LastActionTick, LastF5Tick, AwaitingSwap, ExpectedWeapon, SwapPendingTick, CurrentWeapon, LastWeapon, F5Armed, F5ArmedTick, OpenerActive, LastSwapAttempt
+    global RepeatingKey, RepeatUntil, LastRepeatTick
 
     if !ActionSend.Has(action)
         return false
@@ -482,24 +518,39 @@ CastAction(action, weapon) {
     castMs := GetActionDelay(action, weapon)
     bufferMs := GetActionBuffer(action)
 
-    ; quick refresh detection immediately before sending to avoid using a stale weapon state
-    if (!AwaitingSwap) {
-        detected := DetectWeapon()
-        if (detected != CurrentWeapon) {
-            CurrentWeapon := detected
-            LastWeapon := detected
-            ; DO NOT reset loop step mid-cast here to avoid disrupting sequence
+    ; Removed DetectWeapon from here. We trust CurrentWeapon.
+    ; Weapon updates only happen during the SWAP confirmation phase in RotationTick.
+
+    ; Send the key once immediately
+    key := ActionSend[action]
+    SendEvent(key)
+    LogEvent(action, weapon)
+
+    ; Initialize non-blocking repetition if there is a cast time
+    isInstant := RegExMatch(action, "^(F[1-5]|9)$")
+
+    if (castMs > 0 && !isInstant) {
+        RepeatingKey := key
+        RepeatUntil := A_TickCount + castMs
+        LastRepeatTick := A_TickCount
+    } else {
+        ; If instant, we do NOT clear the existing repetition (could be casting another skill)
+        if (!isInstant) {
+            RepeatingKey := ""
+            RepeatUntil := 0
         }
-        weapon := CurrentWeapon
     }
 
-    SendDuringCast(action, castMs, weapon)
-    BusyUntil := A_TickCount + bufferMs
+    ; Calculate how long we are busy for the NEXT action
+    ; Instant skills do NOT update BusyUntil
+    if (!isInstant) {
+        BusyUntil := A_TickCount + castMs + bufferMs
+    }
+    
     LastAction := action
     LastActionTick := A_TickCount
-    if (action == "F5")
-        LastF5Tick := A_TickCount
     if (action == "F5") {
+        LastF5Tick := A_TickCount
         F5Armed := false
         F5ArmedTick := 0
     }
@@ -509,49 +560,24 @@ CastAction(action, weapon) {
     }
 
     if (action == "SWAP") {
-        ; perform swap: mark awaiting confirmation (do not assume success)
         newWeapon := (weapon == "GS") ? "DS" : "GS"
         AwaitingSwap := true
         ExpectedWeapon := newWeapon
         SwapPendingTick := A_TickCount
-        LastWeaponSwapTick := 0
-        LogEvent("SWAP_INIT", weapon, "Expected=" . ExpectedWeapon . " " . PixelSnapshot())
-        ; BusyUntil is set by bufferMs (should be the swap animation time)
-        ; Do not update CurrentWeapon until pixel confirms the swap
+        LogEvent("SWAP_INIT", weapon, "Expected=" . ExpectedWeapon)
     }
     
     return true
 }
 
-SendDuringCast(action, castMs, weapon) {
-    global TargetWindow, Running, BusyUntil, TimingScale, LastWeapon, LastSwapAttempt, LastWeaponSwapTick, LastAction, LastActionTick, LastF5Tick, AwaitingSwap, ExpectedWeapon, SwapPendingTick, SwapWaitMs, SwapConfirmMs, CurrentWeapon, LogFilePath, F5Armed, F5ArmedTick, OpenerActive, OpenerInProgress, OpenerStep, OpenerPlan, CastBuffer, UtilityBuffer, SwapRetryMs, SwapSend, CastRepeatMs, WeaponIndicator, IllusionIndicator, FullIllusionColor, PowerSpikeIndicator, PowerSpikeFullColor, SkillPixels, ActionSend, GSDelays, DSDelays, GSPlan, DSPlan, GsStep, DsStep, FillerPriority
-    global ActionSend, CastRepeatMs, Running, TargetWindow, CurrentWeapon, BusyUntil
-
+; Simplified non-blocking SendEvent
+SendOnce(action, weapon) {
+    global ActionSend
     key := ActionSend[action]
     SendEvent(key)
     LogEvent(action, weapon)
-
-    if (castMs <= 0)
-        return
-
-    startTick := A_TickCount
-    nextTick := startTick + CastRepeatMs
-
-    while (A_TickCount - startTick < castMs) {
-        if !Running
-            return
-        if !WinActive(TargetWindow)
-            return
-
-        if (A_TickCount >= nextTick) {
-            SendEvent(key)
-            nextTick += CastRepeatMs
-            continue
-        }
-
-        Sleep(10)
-    }
 }
+
 
 GetActionDelay(action, weapon) {
     global TargetWindow, Running, BusyUntil, TimingScale, LastWeapon, LastSwapAttempt, LastWeaponSwapTick, LastAction, LastActionTick, LastF5Tick, AwaitingSwap, ExpectedWeapon, SwapPendingTick, SwapWaitMs, SwapConfirmMs, CurrentWeapon, LogFilePath, F5Armed, F5ArmedTick, OpenerActive, OpenerInProgress, OpenerStep, OpenerPlan, CastBuffer, UtilityBuffer, SwapRetryMs, SwapSend, CastRepeatMs, WeaponIndicator, IllusionIndicator, FullIllusionColor, PowerSpikeIndicator, PowerSpikeFullColor, SkillPixels, ActionSend, GSDelays, DSDelays, GSPlan, DSPlan, GsStep, DsStep, FillerPriority
@@ -587,32 +613,20 @@ GetActionBuffer(action) {
 }
 
 DetectWeapon(stable := false, samples := 5, delayMs := 18) {
-    global TargetWindow, Running, BusyUntil, TimingScale, LastWeapon, LastSwapAttempt, LastWeaponSwapTick, LastAction, LastActionTick, LastF5Tick, AwaitingSwap, ExpectedWeapon, SwapPendingTick, SwapWaitMs, SwapConfirmMs, CurrentWeapon, LogFilePath, F5Armed, F5ArmedTick, OpenerActive, OpenerInProgress, OpenerStep, OpenerPlan, CastBuffer, UtilityBuffer, SwapRetryMs, SwapSend, CastRepeatMs, WeaponIndicator, IllusionIndicator, FullIllusionColor, PowerSpikeIndicator, PowerSpikeFullColor, SkillPixels, ActionSend, GSDelays, DSDelays, GSPlan, DSPlan, GsStep, DsStep, FillerPriority
-    global WeaponIndicator, WeaponIndicatorColor, PixelDebugVisible
+    global WeaponIndicator, WeaponIndicatorColor, PixelDebugVisible, CurrentWeapon
 
-    if (!stable) {
-        color := PixelGetColor(WeaponIndicator[1], WeaponIndicator[2], "RGB")
-        detected := (color == WeaponIndicatorColor) ? "GS" : "DS"
-        if (PixelDebugVisible) {
-            PixelDebugPush("Weapon pixel @" . WeaponIndicator[1] . "," . WeaponIndicator[2] . " color=0x" . Format("{:06X}", color) . " -> " . detected . " target=0x" . Format("{:06X}", WeaponIndicatorColor))
-        }
-        return detected
+    color := PixelGetColor(WeaponIndicator[1], WeaponIndicator[2], "RGB")
+    
+    ; If the pixel is pure black, it's probably a cooldown or UI transition.
+    ; Stay with the current weapon rather than making a wild guess.
+    if (color == 0x000000) {
+        return CurrentWeapon
     }
 
-    ; stable sampling: majority of exact matches to WeaponIndicatorColor => GS
-    gsCount := 0
-    samplesInfo := ""
-    i := 0
-    while (i < samples) {
-        col := PixelGetColor(WeaponIndicator[1], WeaponIndicator[2], "RGB")
-        samplesInfo .= " 0x" . Format("{:06X}", col)
-        if (col == WeaponIndicatorColor)
-            gsCount += 1
-        i += 1
-        Sleep(delayMs)
+    detected := (color == WeaponIndicatorColor) ? "GS" : "DS"
+    if (PixelDebugVisible) {
+        PixelDebugPush("Weapon pixel @" . WeaponIndicator[1] . "," . WeaponIndicator[2] . " color=0x" . Format("{:06X}", color) . " -> " . detected)
     }
-    detected := (gsCount * 2 >= samples) ? "GS" : "DS"
-    PixelDebugPush("Weapon pixel stable check counts=" . gsCount . "/" . samples . " samples=" . samplesInfo . " -> " . detected)
     return detected
 }
 
@@ -643,26 +657,6 @@ HasFullIllusions() {
 
     color := PixelGetColor(IllusionIndicator[1], IllusionIndicator[2], "RGB")
     return (color != FullIllusionColor)
-}
-
-ShouldCastF5(weapon) {
-    global F5Armed, F5ArmedTick, CurrentWeapon, OpenerActive
-
-    if !OpenerActive || !F5Armed
-        return false
-
-    if (CurrentWeapon != "GS")
-        return false
-
-    if !IsReady("F5")
-        return false
-
-    if (A_TickCount - F5ArmedTick > 1500) {
-        F5Armed := false
-        return false
-    }
-
-    return true
 }
 
 CanCastPowerSpike() {
